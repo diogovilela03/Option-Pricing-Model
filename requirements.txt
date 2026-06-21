@@ -6,3 +6,4 @@ plotly>=5.22
 python-dotenv>=1.0
 requests>=2.32
 pytest>=8.2
+yfinance>=0.2
