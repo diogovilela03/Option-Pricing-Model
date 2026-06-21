@@ -122,3 +122,5 @@ A pricing and calibration toolkit covering three layers:
 - Git: feature branches per module (e.g., `feature/black-scholes`, `feature/svi-calibration`, `feature/dashboard`), meaningful commit messages
 - pytest as described above
 - README with project overview, methodology notes (especially the disclosed simplifications: close-price-as-IV-input, Heston-not-jointly-calibrated, single-snapshot-day), and setup instructions
+
+@option-pricing-lab-spec.md
