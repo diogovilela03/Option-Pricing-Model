@@ -47,7 +47,7 @@ def fit_slice(
         {"type": "ineq", "fun": lambda x: x[1]},                          # b >= 0
         {"type": "ineq", "fun": lambda x: 1 - abs(x[2]) - 1e-6},          # |rho| < 1
         {"type": "ineq", "fun": lambda x: x[4] - 1e-6},                   # sigma > 0
-        {"type": "ineq", "fun": lambda x: x[0] + x[1] * x[4] * np.sqrt(1 - x[2]**2)},  # w >= 0
+        {"type": "ineq", "fun": lambda x: x[0] + x[1] * x[4] * np.sqrt(np.maximum(1 - x[2]**2, 0))},  # w >= 0
     ]
 
     best_result = None

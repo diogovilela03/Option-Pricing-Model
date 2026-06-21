@@ -86,6 +86,65 @@ def check_calendar(k: np.ndarray, slices: list[dict], tol: float = -1e-6) -> dic
     }
 
 
+def check_butterfly_w(k: np.ndarray, w: np.ndarray, tol: float = -1e-6) -> dict:
+    """Model-agnostic butterfly check from a total-variance array.
+
+    Uses numerical derivatives (np.gradient) so it works for any model
+    (SSVI, Heston, etc.) — not just SVI.  For best accuracy pass a dense,
+    evenly-spaced k grid.
+    """
+    dk = k[1] - k[0]
+    dw  = np.gradient(w,  dk)
+    ddw = np.gradient(dw, dk)
+
+    # Guard against w ≈ 0 at extreme wings
+    w_safe = np.maximum(w, 1e-10)
+
+    term1 = (1 - k * dw / (2 * w_safe)) ** 2
+    term2 = (dw ** 2 / 4) * (1 / w_safe + 0.25)
+    term3 = ddw / 2
+
+    g = term1 - term2 + term3
+    violations = int(np.sum(g < tol))
+    return {
+        "arbitrage_free": violations == 0,
+        "min_g": float(np.min(g)),
+        "violation_count": violations,
+        "g": g,
+    }
+
+
+def check_calendar_w(k: np.ndarray, slices_w: list[dict], tol: float = -1e-6) -> dict:
+    """Model-agnostic calendar check from total-variance arrays.
+
+    slices_w: list of dicts with 'T' (float) and 'w' (np.ndarray of total variance).
+    """
+    sorted_slices = sorted(slices_w, key=lambda s: s["T"])
+
+    if len(sorted_slices) <= 1:
+        return {"arbitrage_free": True, "violation_count": 0, "pair_results": []}
+
+    pair_results = []
+    total_violations = 0
+    for i in range(len(sorted_slices) - 1):
+        s1, s2 = sorted_slices[i], sorted_slices[i + 1]
+        diff = s2["w"] - s1["w"]
+        v_count = int(np.sum(diff < tol))
+        total_violations += v_count
+        pair_results.append({
+            "T1": s1["T"], "T2": s2["T"],
+            "arbitrage_free": v_count == 0,
+            "violation_count": v_count,
+            "min_diff": float(np.min(diff)),
+        })
+
+    return {
+        "arbitrage_free": total_violations == 0,
+        "violation_count": total_violations,
+        "pair_results": pair_results,
+    }
+
+
 def _svi_derivatives(
     k: np.ndarray, params: dict
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
