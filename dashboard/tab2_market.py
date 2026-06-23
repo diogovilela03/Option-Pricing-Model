@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from storage.db import load_chain
+from storage.db import load_chain, load_calibration_cache
 from vol_surface.iv_inversion import implied_vol
 from vol_surface.svi import fit_slice, svi_total_var
 from vol_surface.ssvi import fit_ssvi, ssvi_total_var
@@ -51,7 +51,6 @@ def _load() -> pd.DataFrame:
 
 @st.cache_resource
 def _load_calibration_cache() -> dict | None:
-    from storage.db import load_calibration_cache
     return load_calibration_cache(CACHE_PATH)
 
 
