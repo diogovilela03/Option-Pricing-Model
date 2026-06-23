@@ -23,9 +23,10 @@ from dashboard.charts import (
     greek_market_profile_figure,
 )
 
-_BS    = BlackScholes()
-DB_PATH = Path("data/spy_chain.db")
-K_DENSE = np.linspace(-0.8, 0.8, 200)
+_BS         = BlackScholes()
+DB_PATH     = Path("data/spy_chain.db")
+CACHE_PATH  = Path("data/calibration_cache.json")
+K_DENSE     = np.linspace(-0.8, 0.8, 200)
 
 _GREEK_LABELS = {
     "delta": "Delta",
@@ -49,8 +50,29 @@ def _load() -> pd.DataFrame:
 
 
 @st.cache_resource
+def _load_calibration_cache() -> dict | None:
+    from storage.db import load_calibration_cache
+    return load_calibration_cache(CACHE_PATH)
+
+
+def _cache_hit(spot: float, r: float) -> bool:
+    cache = _load_calibration_cache()
+    return (
+        cache is not None
+        and abs(cache["spot"] - spot) < 0.01
+        and abs(cache["r"] - r) < 1e-4
+    )
+
+
+@st.cache_resource
 def _compute_ivs(expiry: str, spot: float, r: float) -> pd.DataFrame:
     """IV inversion for one expiry slice, with outlier filtering."""
+    if _cache_hit(spot, r):
+        cache = _load_calibration_cache()
+        ivs_data = cache.get("ivs", {}).get(expiry)  # type: ignore[union-attr]
+        if ivs_data:
+            return pd.DataFrame(ivs_data)
+
     df = _load()
     slice_df = df[df["expiration"] == expiry].copy()
     T = max((date.fromisoformat(expiry) - date.today()).days / 365.0, 1 / 365)
@@ -90,6 +112,12 @@ def _compute_market_greeks(expiry: str, spot: float, r: float) -> pd.DataFrame:
 @st.cache_resource
 def _fit_svi_all(spot: float, r: float) -> dict:
     """Fit raw SVI per expiry slice. Returns {expiry: params}."""
+    if _cache_hit(spot, r):
+        cache = _load_calibration_cache()
+        svi_fits = cache.get("svi_fits")  # type: ignore[union-attr]
+        if svi_fits:
+            return svi_fits
+
     df      = _load()
     results = {}
     for expiry in sorted(df["expiration"].unique()):
@@ -110,6 +138,12 @@ def _fit_ssvi_surface(spot: float, r: float) -> dict | None:
 
     Returns dict with keys: rho, eta, gamma, rmse, thetas {expiry: theta}.
     """
+    if _cache_hit(spot, r):
+        cache = _load_calibration_cache()
+        ssvi = cache.get("ssvi")  # type: ignore[union-attr]
+        if ssvi:
+            return ssvi
+
     svi_fits = _fit_svi_all(spot, r)
     if len(svi_fits) < 2:
         return None
@@ -142,6 +176,12 @@ def _fit_ssvi_surface(spot: float, r: float) -> dict | None:
 @st.cache_resource
 def _calibrate_heston_cached(spot: float, r: float) -> dict | None:
     """Heston calibration across the full chain (cached per session)."""
+    if _cache_hit(spot, r):
+        cache = _load_calibration_cache()
+        heston = cache.get("heston")  # type: ignore[union-attr]
+        if heston:
+            return heston
+
     df = _load()
     all_rows = []
     for expiry in sorted(df["expiration"].unique()):
@@ -297,13 +337,17 @@ def _arbitrage_summary(svi_fits: dict, ssvi_result: dict | None, spot: float, r:
 # ──────────────────────────────────────────────
 
 def render_tab2_sidebar(expiries: list[str]) -> dict:
+    cache = _load_calibration_cache()
+    default_spot = float(cache["spot"]) if cache else 746.74
+    default_r    = float(cache.get("r", 0.05)) if cache else 0.05
+
     st.sidebar.subheader("Market Snapshot")
     spot = st.sidebar.number_input(
-        "Spot price (S)", value=746.74, step=0.5, key="t2_spot",
+        "Spot price (S)", value=default_spot, step=0.5, key="t2_spot",
         help="SPY spot at time of snapshot.",
     )
     r = st.sidebar.number_input(
-        "Risk-free rate (r)", value=0.05, step=0.005, key="t2_r",
+        "Risk-free rate (r)", value=default_r, step=0.005, key="t2_r",
         help="Used to compute the forward and discount factor.",
     )
     selected_expiry = st.sidebar.selectbox("Expiry", expiries, key="t2_expiry")
@@ -340,8 +384,7 @@ def render_tab2(params: dict):
 
     # ── IV smile ──────────────────────────────────────────────────────
     st.subheader(f"IV Smile — {selected_expiry}")
-    st.caption("SVI (black · solid), SSVI (blue · dashed), Heston (orange · dot). "
-               "Heston calibration runs once on first load (~20–40 s).")
+    st.caption("SVI (black · solid), SSVI (blue · dashed), Heston (orange · dot).")
 
     with st.spinner("Inverting IVs..."):
         slice_df = _compute_ivs(selected_expiry, spot, r)
@@ -383,7 +426,7 @@ def render_tab2(params: dict):
 
     # Heston curve
     heston_strikes, heston_iv_curve = np.array([]), np.array([])
-    with st.spinner("Calibrating Heston (cached after first run)..."):
+    with st.spinner("Loading Heston parameters..."):
         heston_result = _calibrate_heston_cached(spot, r)
         if heston_result:
             heston_strikes, heston_iv_curve = _heston_smile_curve(

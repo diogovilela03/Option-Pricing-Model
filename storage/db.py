@@ -1,4 +1,5 @@
 """SQLite persistence layer for the SPY option chain snapshot."""
+import json
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -59,3 +60,15 @@ def load_chain(db_path: Path) -> pd.DataFrame:
             conn,
         )
     return df
+
+
+def save_calibration_cache(path: Path, data: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_calibration_cache(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    with open(path) as f:
+        return json.load(f)

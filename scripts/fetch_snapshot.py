@@ -12,17 +12,24 @@ This is a disclosed simplification — Massive free tier has no quotes endpoint
 and yfinance lastPrice is the last recorded trade, not a true mid.
 """
 import argparse
+import math
 import sys
+from datetime import date, datetime
 from pathlib import Path
+
+import numpy as np
+import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from storage.db import init_db, insert_chain, load_chain
+from storage.db import init_db, insert_chain, load_chain, save_calibration_cache
 
 DB_PATH = Path("data/spy_chain.db")
+CACHE_PATH = Path("data/calibration_cache.json")
 UNDERLYING = "SPY"
 EXPIRY_WINDOW_DAYS = 90
 STRIKE_BAND = 0.25
+DEFAULT_R = 0.05
 
 
 def fetch_massive() -> list[dict]:
@@ -64,6 +71,118 @@ def fetch_yfinance() -> list[dict]:
     )
 
 
+def _get_spot() -> float:
+    import yfinance as yf
+    return float(yf.Ticker(UNDERLYING).fast_info["last_price"])
+
+
+def _make_serializable(obj):
+    """Recursively convert numpy types and NaN to JSON-safe equivalents."""
+    if isinstance(obj, dict):
+        return {k: _make_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_make_serializable(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return [_make_serializable(v) for v in obj.tolist()]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, (np.floating, float)):
+        f = float(obj)
+        return None if math.isnan(f) else f
+    if isinstance(obj, bool):
+        return obj
+    return obj
+
+
+def build_calibration_cache(spot: float, r: float = DEFAULT_R) -> None:
+    from vol_surface.iv_inversion import implied_vol
+    from vol_surface.svi import fit_slice, svi_total_var
+    from vol_surface.ssvi import fit_ssvi
+    from vol_surface.heston_calibration import calibrate_heston
+
+    print(f"\nBuilding calibration cache (spot={spot:.2f}, r={r})...")
+    df = load_chain(DB_PATH)
+
+    ivs_by_expiry: dict[str, list] = {}
+    svi_fits: dict[str, dict] = {}
+
+    for expiry in sorted(df["expiration"].unique()):
+        T = max((date.fromisoformat(expiry) - date.today()).days / 365.0, 1 / 365)
+        slice_df = df[df["expiration"] == expiry].copy()
+
+        ivs = []
+        for _, row in slice_df.iterrows():
+            try:
+                iv = implied_vol(spot, row["strike"], T, r, row["close_price"], row["option_type"])
+                ivs.append(iv)
+            except ValueError:
+                ivs.append(float("nan"))
+
+        slice_df["iv"] = ivs
+        slice_df["T"] = T
+        slice_df["log_moneyness"] = np.log(slice_df["strike"] / (spot * math.exp(r * T)))
+        slice_df["total_var"] = slice_df["iv"] ** 2 * T
+        slice_df = slice_df.dropna(subset=["iv"])
+        slice_df = slice_df[slice_df["iv"].between(0.01, 1.5)]
+
+        if len(slice_df) < 5:
+            print(f"  {expiry}: skipped (fewer than 5 valid IVs)")
+            continue
+
+        ivs_by_expiry[expiry] = slice_df.to_dict(orient="records")
+
+        try:
+            params = fit_slice(slice_df["log_moneyness"].values, slice_df["total_var"].values)
+            svi_fits[expiry] = params
+            print(f"  SVI  {expiry}: OK")
+        except Exception as e:
+            print(f"  SVI  {expiry}: failed -- {e}")
+
+    # SSVI global fit
+    ssvi_result = None
+    if len(svi_fits) >= 2:
+        slices, thetas = [], {}
+        for expiry, params in svi_fits.items():
+            rows = ivs_by_expiry[expiry]
+            theta = float(svi_total_var(np.array([0.0]), params)[0])
+            thetas[expiry] = theta
+            slices.append({
+                "log_moneyness": np.array([row["log_moneyness"] for row in rows]),
+                "total_var":     np.array([row["total_var"]     for row in rows]),
+                "theta":         theta,
+            })
+        try:
+            ssvi_result = fit_ssvi(slices)
+            ssvi_result["thetas"] = thetas
+            print(f"  SSVI global: OK (RMSE={ssvi_result['rmse']:.6f})")
+        except Exception as e:
+            print(f"  SSVI global: failed -- {e}")
+
+    # Heston calibration
+    heston_result = None
+    if ivs_by_expiry:
+        all_rows = [row for rows in ivs_by_expiry.values() for row in rows]
+        full_df = pd.DataFrame(all_rows)
+        try:
+            print("  Heston calibration (~30-40s)...")
+            heston_result = calibrate_heston(full_df, S=spot, r=r)
+            print(f"  Heston: OK (RMSE={heston_result['rmse']:.6f})")
+        except Exception as e:
+            print(f"  Heston: failed -- {e}")
+
+    cache = _make_serializable({
+        "generated_at": datetime.utcnow().isoformat(),
+        "spot": spot,
+        "r": r,
+        "svi_fits": svi_fits,
+        "ssvi": ssvi_result,
+        "heston": heston_result,
+        "ivs": ivs_by_expiry,
+    })
+    save_calibration_cache(CACHE_PATH, cache)
+    print(f"Calibration cache saved -> {CACHE_PATH}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch SPY option chain snapshot.")
     parser.add_argument(
@@ -90,6 +209,9 @@ def main():
     df = load_chain(DB_PATH)
     print(f"Snapshot saved. {len(df)} rows, {df['expiration'].nunique()} expiries, "
           f"{df['strike'].nunique()} unique strikes.")
+
+    spot = _get_spot()
+    build_calibration_cache(spot)
 
 
 if __name__ == "__main__":
