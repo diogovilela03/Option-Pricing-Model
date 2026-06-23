@@ -2,10 +2,6 @@
 
 A pricing and vol-surface calibration toolkit built as a portfolio project, demonstrating option pricing theory, numerical methods, stochastic volatility modelling, and software engineering practice.
 
-Companion project: [`forward-curve-arbitrage`](https://github.com/diogovilela03/forward-curve-arbitrage) — that project covers forward curve construction and Delta One mechanics; this one covers pricing engines, Monte Carlo methods, and arbitrage-free vol surface calibration. The two are deliberately scoped not to overlap.
-
-**Target audience**: quantitative research, quant trading, and quant developer roles at market-making and systematic trading firms.
-
 ---
 
 ## What it does
