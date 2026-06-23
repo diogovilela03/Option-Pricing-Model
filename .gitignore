@@ -1,4 +1,6 @@
 .env
+CLAUDE.md
+option-pricing-lab-spec.md
 __pycache__/
 *.pyc
 *.pyo
