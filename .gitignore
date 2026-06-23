@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+# data/spy_chain.db is intentionally committed (portfolio snapshot, updated manually)
+*.sqlite
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.streamlit/secrets.toml
