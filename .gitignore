@@ -3,7 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
-*.db
+# data/spy_chain.db is intentionally committed (portfolio snapshot, updated manually)
 *.sqlite
 .venv/
 venv/
