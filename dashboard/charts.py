@@ -259,6 +259,278 @@ def greek_market_heatmap_figure(
     return fig
 
 
+def exotic_payoff_figure(
+    S_grid: np.ndarray,
+    exotic_payoffs: np.ndarray,
+    vanilla_payoffs: np.ndarray,
+    exotic_label: str,
+    S_current: float,
+) -> go.Figure:
+    """Payoff-at-expiry: exotic vs vanilla benchmark."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=S_grid, y=vanilla_payoffs, mode="lines",
+        line=dict(color="gray", width=1.5, dash="dot"), name="Vanilla",
+    ))
+    fig.add_trace(go.Scatter(
+        x=S_grid, y=exotic_payoffs, mode="lines",
+        line=dict(color="#1f77b4", width=2.5), name=exotic_label,
+    ))
+    fig.add_vline(x=S_current, line_dash="dash", line_color="gray", line_width=1,
+                  annotation_text=f"S={S_current:.0f}")
+    fig.update_layout(
+        xaxis_title="Spot at Expiry", yaxis_title="Payoff",
+        height=380, margin=dict(t=30, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def barrier_delta_figure(
+    S_grid: np.ndarray,
+    exotic_delta: np.ndarray,
+    vanilla_delta: np.ndarray,
+    barrier: float,
+    barrier_type: str,
+    S_current: float,
+) -> go.Figure:
+    """Delta profile near barrier (shows discontinuity / explosion)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=S_grid, y=vanilla_delta, mode="lines",
+        line=dict(color="gray", width=1.5, dash="dot"), name="Vanilla delta",
+    ))
+    fig.add_trace(go.Scatter(
+        x=S_grid, y=exotic_delta, mode="lines",
+        line=dict(color="#d62728", width=2.5), name="Barrier delta",
+    ))
+    fig.add_vline(x=barrier, line_dash="dash", line_color="orange", line_width=1.5,
+                  annotation_text=f"Barrier {barrier:.0f}")
+    fig.add_vline(x=S_current, line_dash="dot", line_color="gray", line_width=1)
+    fig.update_layout(
+        title=f"Delta Profile — {barrier_type}",
+        xaxis_title="Spot", yaxis_title="Delta",
+        height=380, margin=dict(t=40, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def barrier_mc_paths_figure(
+    time_grid: np.ndarray,
+    paths: np.ndarray,
+    barrier: float,
+    barrier_type: str,
+    knocked_mask: np.ndarray,
+) -> go.Figure:
+    """Fan chart of MC paths — red=knocked-out, teal=survived."""
+    fig = go.Figure()
+    colors = np.where(knocked_mask, "rgba(214,39,40,0.35)", "rgba(31,119,180,0.35)")
+    for i in range(paths.shape[1]):
+        fig.add_trace(go.Scatter(
+            x=time_grid, y=paths[:, i],
+            mode="lines", line=dict(color=colors[i], width=0.8),
+            showlegend=False,
+        ))
+    fig.add_hline(y=barrier, line_color="orange", line_dash="dash",
+                  annotation_text=f"{barrier_type} barrier = {barrier:.0f}")
+    # Legend proxies
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                             line=dict(color="rgba(31,119,180,0.8)", width=2),
+                             name="Survived"))
+    fig.add_trace(go.Scatter(x=[None], y=[None], mode="lines",
+                             line=dict(color="rgba(214,39,40,0.8)", width=2),
+                             name="Knocked out"))
+    fig.update_layout(
+        xaxis_title="Time (years)", yaxis_title="Asset Price",
+        height=380, margin=dict(t=30, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def asian_running_avg_figure(
+    time_grid: np.ndarray,
+    price_paths: np.ndarray,
+    avg_paths: np.ndarray,
+    K: float,
+) -> go.Figure:
+    """Running arithmetic-average paths alongside asset paths, with strike line."""
+    fig = make_subplots(rows=1, cols=2,
+                        subplot_titles=["Asset Paths", "Running Average"],
+                        horizontal_spacing=0.1)
+    n = price_paths.shape[1]
+    for i in range(n):
+        fig.add_trace(go.Scatter(
+            x=time_grid, y=price_paths[:, i], mode="lines",
+            line=dict(color="rgba(31,119,180,0.35)", width=0.8), showlegend=False,
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=time_grid, y=avg_paths[:, i], mode="lines",
+            line=dict(color="rgba(44,160,44,0.35)", width=0.8), showlegend=False,
+        ), row=1, col=2)
+    for col in (1, 2):
+        fig.add_hline(y=K, line_dash="dash", line_color="red",
+                      annotation_text=f"K={K:.0f}", row=1, col=col)
+    fig.update_xaxes(title_text="Time (years)")
+    fig.update_yaxes(title_text="Price", col=1)
+    fig.update_layout(height=380, margin=dict(t=40, b=20))
+    return fig
+
+
+def asian_vol_comparison_figure(
+    sig_grid: np.ndarray,
+    vanilla_prices: np.ndarray,
+    geo_prices: np.ndarray,
+    arith_prices: np.ndarray,
+    current_sig: float,
+) -> go.Figure:
+    """Call price vs sigma: vanilla vs geometric vs arithmetic Asian."""
+    fig = go.Figure()
+    for y, name, color, dash in [
+        (vanilla_prices, "Vanilla BS", "gray", "dot"),
+        (geo_prices, "Geometric Asian", "#ff7f0e", "solid"),
+        (arith_prices, "Arithmetic Asian (MC)", "#1f77b4", "solid"),
+    ]:
+        fig.add_trace(go.Scatter(
+            x=sig_grid * 100, y=y, mode="lines",
+            line=dict(color=color, width=2, dash=dash), name=name,
+        ))
+    fig.add_vline(x=current_sig * 100, line_dash="dot", line_color="gray", line_width=1)
+    fig.update_layout(
+        xaxis_title="Volatility σ (%)", yaxis_title="Call Price",
+        height=380, margin=dict(t=30, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def digital_call_spread_figure(
+    dK_grid: np.ndarray,
+    cs_prices: np.ndarray,
+    digital_price: float,
+) -> go.Figure:
+    """Call spread price converging to digital (cash-or-nothing) as dK → 0."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dK_grid, y=cs_prices, mode="lines+markers",
+        line=dict(color="#1f77b4", width=2), marker=dict(size=5),
+        name="Call spread",
+    ))
+    fig.add_hline(y=digital_price, line_dash="dash", line_color="red",
+                  annotation_text=f"Digital = {digital_price:.4f}")
+    fig.update_layout(
+        xaxis_title="dK (spread width)", yaxis_title="Price",
+        xaxis_type="log",
+        height=380, margin=dict(t=30, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def digital_delta_vs_T_figure(
+    T_grid: np.ndarray,
+    deltas: np.ndarray,
+    current_T: float,
+) -> go.Figure:
+    """Digital call delta spike as T → 0 (ATM delta → ∞)."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=T_grid, y=deltas, mode="lines",
+        line=dict(color="#d62728", width=2), name="Delta",
+    ))
+    fig.add_vline(x=current_T, line_dash="dot", line_color="gray", line_width=1,
+                  annotation_text=f"T={current_T:.2f}")
+    fig.update_layout(
+        xaxis_title="Time to Expiry T (years)", yaxis_title="Delta",
+        height=380, margin=dict(t=30, b=20),
+    )
+    return fig
+
+
+def autocall_schedule_figure(
+    obs_dates: list,
+    S_paths: np.ndarray,
+    S0: float,
+    autocall_lvl: float,
+    coupon_barrier: float | None,
+    prot_barrier: float,
+) -> go.Figure:
+    """Swimlane chart: MC paths with autocall/coupon/protection barrier lines."""
+    fig = go.Figure()
+    n_show = min(S_paths.shape[1], 80)
+    for i in range(n_show):
+        fig.add_trace(go.Scatter(
+            x=obs_dates, y=S_paths[:, i] / S0, mode="lines+markers",
+            line=dict(color="rgba(31,119,180,0.25)", width=0.8),
+            marker=dict(size=3), showlegend=False,
+        ))
+    fig.add_hline(y=autocall_lvl, line_color="green", line_width=2,
+                  annotation_text=f"Autocall {autocall_lvl:.0%}")
+    if coupon_barrier is not None:
+        fig.add_hline(y=coupon_barrier, line_color="orange", line_width=1.5,
+                      line_dash="dash", annotation_text=f"Coupon {coupon_barrier:.0%}")
+    fig.add_hline(y=prot_barrier, line_color="red", line_width=1.5,
+                  line_dash="dot", annotation_text=f"Protection {prot_barrier:.0%}")
+    fig.update_layout(
+        xaxis_title="Observation Date (years)", yaxis_title="S / S₀ (performance)",
+        height=420, margin=dict(t=30, b=20),
+    )
+    return fig
+
+
+def multi_asset_corr_sensitivity_figure(
+    rho_grid: np.ndarray,
+    prices: np.ndarray,
+    product_label: str,
+) -> go.Figure:
+    """Option price vs uniform pairwise correlation ρ."""
+    fig = go.Figure()
+    valid = ~np.isnan(prices)
+    fig.add_trace(go.Scatter(
+        x=rho_grid[valid], y=prices[valid], mode="lines+markers",
+        line=dict(color="#1f77b4", width=2), marker=dict(size=5),
+        name=product_label,
+    ))
+    fig.update_layout(
+        xaxis_title="Pairwise Correlation ρ", yaxis_title="Option Price",
+        xaxis=dict(range=[-1, 1], tickformat=".1f"),
+        height=380, margin=dict(t=30, b=20),
+    )
+    return fig
+
+
+def decomposition_waterfall_figure(components: list[dict]) -> go.Figure:
+    """Waterfall chart of structured product building blocks.
+
+    components: list of dicts with keys 'component' (str) and 'value' (float).
+    """
+    labels = [c["component"] for c in components]
+    values = [c["value"] for c in components]
+    n = len(values)
+
+    measure = ["relative"] * (n - 1) + ["total"]
+    text = [f"{v:+.2f}" if i < n - 1 else f"{v:.2f}" for i, v in enumerate(values)]
+
+    fig = go.Figure(go.Waterfall(
+        orientation="v",
+        measure=measure,
+        x=labels,
+        y=values,
+        text=text,
+        textposition="outside",
+        connector=dict(line=dict(color="rgb(63,63,63)")),
+        increasing=dict(marker=dict(color="#2ca02c")),
+        decreasing=dict(marker=dict(color="#d62728")),
+        totals=dict(marker=dict(color="#1f77b4")),
+    ))
+    fig.update_layout(
+        yaxis_title="Value", height=380, margin=dict(t=30, b=20),
+        showlegend=False,
+    )
+    return fig
+
+
 def smile_figure(
     call_strikes: np.ndarray | None,
     iv_calls: np.ndarray | None,
