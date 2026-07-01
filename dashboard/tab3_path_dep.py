@@ -209,7 +209,7 @@ def _render_barrier(params: dict):
             use_container_width=True)
     with col2:
         exotic_d = barrier_delta_profile(s_grid, K, T, r, sigma, H, bt, ot)
-        vanilla_d = np.array([_BS.greek(s, K, T, r, sigma, ot, "delta") for s in s_grid])
+        vanilla_d = np.array([_BS.greeks(s, K, T, r, sigma, ot)["delta"] for s in s_grid])
         st.plotly_chart(barrier_delta_figure(s_grid, exotic_d, vanilla_d, H, bt, S),
                         use_container_width=True)
 
