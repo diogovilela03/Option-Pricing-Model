@@ -118,34 +118,40 @@ def render_strategies(params: dict):
 
     legs = _legs_for(strategy, S, K, T, r, sigma)
 
-    # Leg table
+    # Leg table — premium shown as signed cash flow: negative = paid (buy),
+    # positive = received (sell). opstrat itself needs the unsigned op_pr
+    # (it applies the buy/sell sign internally), so legs stay untouched.
+    def _signed(leg):
+        return -leg["op_pr"] if leg["tr_type"] == "b" else leg["op_pr"]
+
     rows = []
     for leg in legs:
         ot = "Call" if leg["op_type"] == "c" else "Put"
         side = "Buy" if leg["tr_type"] == "b" else "Sell"
         rows.append({"Option": ot, "Strike": f"{leg['strike']:.2f}",
-                     "Side": side, "Premium": f"{leg['op_pr']:.4f}"})
+                     "Side": side, "Premium": f"{_signed(leg):.4f}"})
 
-    net_cost = sum(
-        (leg["op_pr"] if leg["tr_type"] == "b" else -leg["op_pr"]) for leg in legs
-    )
+    net_cost = sum(_signed(leg) for leg in legs)
     rows.append({"Option": "", "Strike": "", "Side": "Net cost", "Premium": f"{net_cost:.4f}"})
 
     import pandas as pd
     st.table(pd.DataFrame(rows))
+    st.caption("Premium and net cost are signed cash flows: negative = paid (buy), positive = received (sell).")
 
     # P&L chart via opstrat
     try:
         import opstrat as op
         import matplotlib.pyplot as plt
 
-        spot_range = [S * 0.6, S * 1.4]
-        fig, _ = op.multi_plotter(
+        # opstrat's spot_range is a +/- percentage around spot (int/float),
+        # not a [low, high] list — 40 gives roughly 0.6x-1.4x of spot.
+        op.multi_plotter(
             op_list=legs,
             spot=S,
-            spot_range=spot_range,
+            spot_range=40,
             save=False,
         )
+        fig = plt.gcf()
         st.pyplot(fig)
         plt.close(fig)
     except Exception as e:
