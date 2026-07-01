@@ -76,6 +76,8 @@ def build_chain_yfinance(
                     "expiration": expiry,
                     "option_type": option_type,
                     "close_price": float(row["lastPrice"]),
+                    "bid": float(row["bid"]) if row["bid"] > 0 else None,
+                    "ask": float(row["ask"]) if row["ask"] > 0 else None,
                 })
 
         if verbose:

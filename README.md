@@ -21,6 +21,7 @@ The binomial tree is American-only by design — the point is to show the early-
 - **SVI** (raw-SVI / Gatheral parameterisation), fit per expiry slice
 - **SSVI** (Gatheral-Jacquier power-law), globally consistent surface
 - **Heston characteristic-function pricer** for closed-form Heston prices and calibration
+- **SANOS** (Smooth Arbitrage-free Non-parametric Option Surfaces, Buehler et al. 2026) — per-expiry LP fit in pure price space; arbitrage-free by construction rather than by post-hoc check
 - Arbitrage-free checks: no-calendar-arbitrage (across slices), no-butterfly-arbitrage (within a slice)
 - Calibration target: a real SPY option chain snapshot sourced from yfinance or the Massive API
 
@@ -35,15 +36,15 @@ The binomial tree is American-only by design — the point is to show the early-
 
 **Tab 2 — Market Data Snapshot**
 - Cached single-day SPY chain loaded from SQLite (no live API calls from the dashboard)
-- Self-derived implied vols via BS inversion on close prices
-- SVI, SSVI, and Heston smile curves overlaid on raw IV points per expiry
+- Self-derived implied vols via BS inversion on bid/ask mid price (falls back to close price when quotes are unavailable)
+- SVI, SSVI, Heston, and SANOS smile curves overlaid on raw IV points per expiry
 - Arbitrage-check results with violation magnitudes, not just pass/fail
 
 ---
 
 ## Methodology disclosures
 
-**Close price as IV input** — the Massive free tier has no bid/ask quotes endpoint (HTTP 403). The yfinance `lastPrice` field is similarly a last-trade price, not a true bid/ask mid. Daily close price is the agreed-upon single-price proxy for BS IV inversion. This is disclosed in the dashboard UI and is the stronger engineering story vs relying on a pre-computed vendor IV column.
+**Bid/ask mid where available, close price otherwise** — the yfinance source now carries `bid`/`ask` fields alongside `lastPrice`; when both are present the mid is used as the IV-inversion input, since it's a materially better price proxy than a stale last trade. The Massive free tier still has no bid/ask quotes endpoint (HTTP 403), so contracts sourced from Massive fall back to daily close price. This distinction is disclosed in the dashboard UI rather than silently mixed.
 
 **Heston is not jointly calibrated to the chain** — Heston is used as an alternative simulatable dynamics for pricing and smile comparison against SVI/SSVI. Jointly calibrating Heston parameters via optimisation against an option chain is a notoriously fragile numerical problem (local minima, Feller condition constraints) and is explicitly out of scope for v1.
 
@@ -65,6 +66,7 @@ vol_surface/
   svi.py               raw-SVI per-slice calibration
   ssvi.py              SSVI global surface
   heston_calibration.py  L-BFGS-B Heston calibration
+  sanos.py              SANOS non-parametric LP fit (pure price space)
   iv_inversion.py      Newton-Raphson + Brent BS IV inversion
   arbitrage_checks.py  calendar + butterfly arbitrage checks
 

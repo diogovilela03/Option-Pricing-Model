@@ -79,7 +79,7 @@ def _compute_ivs(expiry: str, spot: float, r: float) -> pd.DataFrame:
     ivs = []
     for _, row in slice_df.iterrows():
         try:
-            iv = implied_vol(spot, row["strike"], T, r, row["close_price"], row["option_type"])
+            iv = implied_vol(spot, row["strike"], T, r, row["mid_price"], row["option_type"])
             ivs.append(iv)
         except ValueError:
             ivs.append(float("nan"))
@@ -210,12 +210,45 @@ def _ssvi_smile_curve(expiry: str, spot: float, r: float, ssvi: dict,
     return F * np.exp(k_plot), iv
 
 
+def _heston_smile_curve_cached(expiry: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load pre-computed Heston smile from calibration cache."""
+    cache = _load_calibration_cache()
+    if not cache:
+        return np.array([]), np.array([])
+    match = next(
+        (s for s in cache.get("heston_smiles", []) if s["expiry"] == expiry),
+        None,
+    )
+    if match is None:
+        return np.array([]), np.array([])
+    return np.array(match["strikes"]), np.array(match["ivs"])
+
+
+def _sanos_smile_curve(expiry: str, spot: float, r: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return (strikes_real, implied_vols) for the SANOS fit of one expiry slice."""
+    cache = _load_calibration_cache()
+    if not cache:
+        return np.array([]), np.array([])
+    sanos_list = cache.get("sanos", [])
+    match = next((s for s in sanos_list if s["expiry"] == expiry), None)
+    if match is None:
+        return np.array([]), np.array([])
+
+    T = match["T"]
+    F = spot * math.exp(r * T)
+    pure_K = np.array(match["pure_strikes"])
+    vols   = np.array([v if v is not None else float("nan") for v in match["fitted_vols"]])
+
+    valid = np.isfinite(vols)
+    return F * pure_K[valid], vols[valid]
+
+
 def _heston_smile_curve(expiry: str, spot: float, r: float, heston: dict,
                         k_lo: float, k_hi: float):
     """Evaluate Heston IV on a coarse strike grid bounded by market strikes."""
     T = max((date.fromisoformat(expiry) - date.today()).days / 365.0, 1 / 365)
     F = spot * math.exp(r * T)
-    k_coarse = np.linspace(k_lo, k_hi, 30)
+    k_coarse = np.linspace(k_lo, k_hi, 100)
     strikes  = F * np.exp(k_coarse)
     ivs = []
     for K in strikes:
@@ -231,7 +264,7 @@ def _heston_smile_curve(expiry: str, spot: float, r: float, heston: dict,
         except Exception:
             ivs.append(float("nan"))
     ivs = np.array(ivs)
-    mask = ~np.isnan(ivs)
+    mask = ~np.isnan(ivs) & (ivs >= 0.01) & (ivs <= 1.5)
     return strikes[mask], ivs[mask]
 
 
@@ -355,7 +388,9 @@ def render_tab2_sidebar(expiries: list[str]) -> dict:
 
 def render_tab2(params: dict):
     st.caption(
-        "⚠️ Prices are single-day end-of-day **last trade prices** (not bid-ask mid). "
+        "⚠️ IV input is the bid/ask **mid price** where quotes are available, "
+        "falling back to the single-day end-of-day **last trade price** otherwise "
+        "(the Massive free tier has no quotes endpoint). "
         "IV outliers (σ < 1% or σ > 150%) are filtered as stale / illiquid."
     )
 
@@ -383,7 +418,11 @@ def render_tab2(params: dict):
 
     # ── IV smile ──────────────────────────────────────────────────────
     st.subheader(f"IV Smile — {selected_expiry}")
-    st.caption("SVI (black · solid), SSVI (blue · dashed), Heston (orange · dot).")
+    st.caption(
+        "SVI (black · solid), SSVI (blue · dashed), Heston (orange · dot), "
+        "SANOS (green · dash-dot). SANOS is a non-parametric LP-based fit in pure "
+        "price space (full strike range); see Buehler et al. (2026)."
+    )
 
     with st.spinner("Inverting IVs..."):
         slice_df = _compute_ivs(selected_expiry, spot, r)
@@ -423,14 +462,16 @@ def render_tab2(params: dict):
                 selected_expiry, spot, r, ssvi_result, k_lo, k_hi
             )
 
-    # Heston curve
-    heston_strikes, heston_iv_curve = np.array([]), np.array([])
-    with st.spinner("Loading Heston parameters..."):
-        heston_result = _calibrate_heston_cached(spot, r)
-        if heston_result:
-            heston_strikes, heston_iv_curve = _heston_smile_curve(
-                selected_expiry, spot, r, heston_result, k_lo, k_hi
-            )
+    # Heston curve — load pre-computed smile from cache, fall back to live if missing
+    heston_result = _calibrate_heston_cached(spot, r)
+    heston_strikes, heston_iv_curve = _heston_smile_curve_cached(selected_expiry)
+    if len(heston_strikes) == 0 and heston_result:
+        heston_strikes, heston_iv_curve = _heston_smile_curve(
+            selected_expiry, spot, r, heston_result, k_lo, k_hi
+        )
+
+    # SANOS curve (non-parametric LP, loaded from cache)
+    sanos_strikes, sanos_iv = _sanos_smile_curve(selected_expiry, spot, r)
 
     model_curves = [
         {"name": "SVI",    "strikes": svi_strikes,    "iv": svi_iv,
@@ -439,6 +480,8 @@ def render_tab2(params: dict):
          "color": "royalblue",   "dash": "dash"},
         {"name": "Heston", "strikes": heston_strikes, "iv": heston_iv_curve,
          "color": "darkorange",  "dash": "dot"},
+        {"name": "SANOS",  "strikes": sanos_strikes,  "iv": sanos_iv,
+         "color": "mediumseagreen", "dash": "dashdot"},
     ]
 
     fig = smile_figure(
@@ -453,7 +496,7 @@ def render_tab2(params: dict):
     st.plotly_chart(fig, width='stretch')
 
     # ── Model parameter tables ─────────────────────────────────────────
-    col_svi, col_ssvi, col_heston = st.columns(3)
+    col_svi, col_ssvi, col_heston, col_sanos = st.columns(4)
 
     with col_svi:
         st.markdown("**SVI params** (per slice)")
@@ -496,6 +539,32 @@ def render_tab2(params: dict):
             st.dataframe(heston_df)
         else:
             st.info("Heston calibration unavailable.")
+
+    with col_sanos:
+        st.markdown("**SANOS** (non-parametric LP)")
+        cache = _load_calibration_cache()
+        sanos_match = next(
+            (s for s in (cache or {}).get("sanos", []) if s["expiry"] == selected_expiry),
+            None,
+        )
+        if sanos_match:
+            atm_call_pure   = sanos_match["atm_call"]
+            atm_call_dollar = atm_call_pure * spot
+            sanos_df = pd.DataFrame([{
+                "ATM vol (ann.)":   f"{sanos_match['atm_vol']:.4f}",
+                "ATM call (pure)":  f"{atm_call_pure:.6f}",
+                "ATM call ($)":     f"${atm_call_dollar:.2f}",
+                "RMSE":             f"{sanos_match['rmse']:.4f}" if sanos_match["rmse"] else "—",
+                "Status":           sanos_match["status"],
+                "Strikes":          str(len(sanos_match["pure_strikes"])),
+            }]).T.rename(columns={0: "value"})
+            st.dataframe(sanos_df)
+            st.caption(
+                "Non-parametric LP fit (Buehler et al. 2026). "
+                "Arbitrage-free by construction."
+            )
+        else:
+            st.info("SANOS not in cache — re-run fetch_snapshot.py.")
 
     st.divider()
 

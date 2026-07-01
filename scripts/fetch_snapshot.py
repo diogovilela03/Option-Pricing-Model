@@ -99,6 +99,7 @@ def build_calibration_cache(spot: float, r: float = DEFAULT_R) -> None:
     from vol_surface.svi import fit_slice, svi_total_var
     from vol_surface.ssvi import fit_ssvi
     from vol_surface.heston_calibration import calibrate_heston
+    from vol_surface.sanos import fit_sanos_surface
 
     print(f"\nBuilding calibration cache (spot={spot:.2f}, r={r})...")
     df = load_chain(DB_PATH)
@@ -113,7 +114,7 @@ def build_calibration_cache(spot: float, r: float = DEFAULT_R) -> None:
         ivs = []
         for _, row in slice_df.iterrows():
             try:
-                iv = implied_vol(spot, row["strike"], T, r, row["close_price"], row["option_type"])
+                iv = implied_vol(spot, row["strike"], T, r, row["mid_price"], row["option_type"])
                 ivs.append(iv)
             except ValueError:
                 ivs.append(float("nan"))
@@ -160,6 +161,7 @@ def build_calibration_cache(spot: float, r: float = DEFAULT_R) -> None:
 
     # Heston calibration
     heston_result = None
+    heston_smiles: list[dict] = []
     if ivs_by_expiry:
         all_rows = [row for rows in ivs_by_expiry.values() for row in rows]
         full_df = pd.DataFrame(all_rows)
@@ -170,14 +172,93 @@ def build_calibration_cache(spot: float, r: float = DEFAULT_R) -> None:
         except Exception as e:
             print(f"  Heston: failed -- {e}")
 
+    # Pre-compute Heston smile curves per expiry
+    if heston_result:
+        from vol_surface.iv_inversion import implied_vol as _iv
+        from pricing.heston_cf import heston_price as _heston_price
+        print("  Pre-computing Heston smiles...")
+        for expiry, rows in ivs_by_expiry.items():
+            T = max((date.fromisoformat(expiry) - date.today()).days / 365.0, 1 / 365)
+            F = spot * math.exp(r * T)
+            exp_df = pd.DataFrame(rows)
+            k_lo = float(exp_df["log_moneyness"].min())
+            k_hi = float(exp_df["log_moneyness"].max())
+            k_grid = np.linspace(k_lo, k_hi, 200)
+            strikes_grid = F * np.exp(k_grid)
+            smile_strikes, smile_ivs = [], []
+            for K in strikes_grid:
+                try:
+                    price = _heston_price(
+                        spot, K, T, r,
+                        heston_result["v0"], heston_result["kappa"],
+                        heston_result["theta"], heston_result["xi"],
+                        heston_result["rho"], option_type="call",
+                    )
+                    iv = _iv(spot, K, T, r, price, "call")
+                    if 0.01 <= iv <= 1.5:
+                        smile_strikes.append(float(K))
+                        smile_ivs.append(float(iv))
+                except Exception:
+                    pass
+            if smile_strikes:
+                heston_smiles.append({
+                    "expiry":  expiry,
+                    "strikes": smile_strikes,
+                    "ivs":     smile_ivs,
+                })
+                print(f"  Heston smile {expiry}: {len(smile_strikes)} points")
+
+    # SANOS per-expiry fit
+    sanos_results: list[dict] = []
+    if ivs_by_expiry:
+        sanos_slices = []
+        for expiry, rows in ivs_by_expiry.items():
+            sl_df = pd.DataFrame(rows)
+            T = max((date.fromisoformat(expiry) - date.today()).days / 365.0, 1 / 365)
+            sanos_slices.append({
+                "expiry":       expiry,
+                "T":            T,
+                "strikes":      sl_df["strike"].values,
+                "mids":         sl_df["mid_price"].values,
+                "option_types": sl_df["option_type"].values,
+                "bids":         sl_df["bid"].values if "bid" in sl_df.columns else None,
+                "asks":         sl_df["ask"].values if "ask" in sl_df.columns else None,
+            })
+        try:
+            print("  SANOS calibration...")
+            raw = fit_sanos_surface(sanos_slices, S=spot, r=r, spread_weighted=False)
+            for res in raw:
+                sanos_results.append({
+                    "expiry":       res["expiry"],
+                    "T":            res["T"],
+                    "pure_strikes": res["pure_strikes"].tolist(),
+                    "fitted_vols":  [
+                        v if np.isfinite(v) else None
+                        for v in res["fitted_vols"].tolist()
+                    ],
+                    "market_vols":  [
+                        v if np.isfinite(v) else None
+                        for v in res["market_vols"].tolist()
+                    ],
+                    "atm_vol":      res["atm_vol"],
+                    "atm_call":     res["atm_call"],
+                    "rmse":         res["rmse"] if np.isfinite(res["rmse"]) else None,
+                    "status":       res["status"],
+                })
+                print(f"  SANOS {res['expiry']}: OK (RMSE={res['rmse']:.4f})")
+        except Exception as e:
+            print(f"  SANOS: failed -- {e}")
+
     cache = _make_serializable({
-        "generated_at": datetime.utcnow().isoformat(),
-        "spot": spot,
-        "r": r,
-        "svi_fits": svi_fits,
-        "ssvi": ssvi_result,
-        "heston": heston_result,
-        "ivs": ivs_by_expiry,
+        "generated_at":  datetime.utcnow().isoformat(),
+        "spot":          spot,
+        "r":             r,
+        "svi_fits":      svi_fits,
+        "ssvi":          ssvi_result,
+        "heston":        heston_result,
+        "heston_smiles": heston_smiles,
+        "sanos":         sanos_results,
+        "ivs":           ivs_by_expiry,
     })
     save_calibration_cache(CACHE_PATH, cache)
     print(f"Calibration cache saved -> {CACHE_PATH}")

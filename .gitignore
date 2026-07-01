@@ -13,3 +13,5 @@ dist/
 build/
 *.egg-info/
 .streamlit/secrets.toml
+.streamlit_stdout.log
+.streamlit_stderr.log

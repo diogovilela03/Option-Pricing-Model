@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS option_chain (
     expiration      TEXT NOT NULL,
     option_type     TEXT NOT NULL,
     close_price     REAL NOT NULL,
+    bid             REAL,
+    ask             REAL,
     fetched_at      TEXT NOT NULL,
     PRIMARY KEY (ticker)
 )
@@ -38,6 +40,8 @@ def insert_chain(db_path: Path, records: list[dict]) -> None:
             r["expiration"],
             r["option_type"],
             r["close_price"],
+            r.get("bid"),
+            r.get("ask"),
             fetched_at,
         )
         for r in records
@@ -45,8 +49,8 @@ def insert_chain(db_path: Path, records: list[dict]) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.executemany(
             "INSERT OR REPLACE INTO option_chain "
-            "(ticker, underlying, strike, expiration, option_type, close_price, fetched_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "(ticker, underlying, strike, expiration, option_type, close_price, bid, ask, fetched_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             rows,
         )
         conn.commit()
@@ -59,6 +63,12 @@ def load_chain(db_path: Path) -> pd.DataFrame:
             "SELECT * FROM option_chain ORDER BY expiration, option_type, strike",
             conn,
         )
+    df["mid_price"] = df.apply(
+        lambda r: (r["bid"] + r["ask"]) / 2
+        if pd.notna(r["bid"]) and pd.notna(r["ask"])
+        else r["close_price"],
+        axis=1,
+    )
     return df
 
 
