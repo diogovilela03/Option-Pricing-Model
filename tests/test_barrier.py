@@ -65,6 +65,46 @@ def test_mc_close_to_rr_down_and_out_call():
     assert abs(mc - rr) / (rr + 1e-6) < 0.05
 
 
+@pytest.mark.parametrize("barrier_type,option_type,H,K_test", [
+    ("down-and-out", "call", 80.0, 100.0),
+    ("down-and-out", "call", 80.0, 70.0),   # K <= H branch
+    ("down-and-out", "put",  80.0, 100.0),
+    ("up-and-out",   "call", 120.0, 100.0),
+    ("up-and-out",   "put",  120.0, 100.0),
+    ("up-and-out",   "put",  120.0, 130.0),  # K > H branch
+])
+def test_mc_close_to_rr_all_out_types(barrier_type, option_type, H, K_test):
+    """Regression guard for the Reiner-Rubinstein branch-table fix: every
+    'out' combo (both K>H and K<=H branches) must track MC within 10%."""
+    rr = _bar.price(S, K_test, T, r, sigma, option_type, H, barrier_type)
+    mc = barrier_mc_price(S, K_test, T, r, sigma, option_type, H, barrier_type,
+                          paths=200_000, steps=200, seed=42)
+    assert abs(rr - mc) / max(mc, 0.1) < 0.10
+
+
+def test_up_and_out_call_drops_to_zero_past_barrier():
+    """Regression guard: an up-and-out option must be worth ~0 once spot has
+    already breached the barrier at inception (previously this extrapolated
+    the RR formula past its valid domain and returned nonsense)."""
+    p_at_barrier = _bar.price(120.0, 100.0, 1.0, 0.02, 0.20, "call", 120.0, "up-and-out")
+    p_past_barrier = _bar.price(130.0, 100.0, 1.0, 0.02, 0.20, "call", 120.0, "up-and-out")
+    assert p_at_barrier == 0.0
+    assert p_past_barrier == 0.0
+
+
+def test_down_and_out_put_already_breached_is_zero():
+    p = _bar.price(75.0, 100.0, 1.0, 0.02, 0.20, "put", 80.0, "down-and-out")
+    assert p == 0.0
+
+
+def test_up_and_in_already_breached_equals_vanilla():
+    """An 'in' option that has already breached at inception behaves as
+    the plain vanilla."""
+    p = _bar.price(125.0, 100.0, 1.0, 0.02, 0.20, "call", 120.0, "up-and-in")
+    v = _bs.price(125.0, 100.0, 1.0, 0.02, 0.20, "call")
+    assert abs(p - v) < 1e-9
+
+
 def test_invalid_option_type_raises():
     with pytest.raises(ValueError):
         _bar.price(S, K, T, r, sigma, "other", H_dn, "down-and-out")

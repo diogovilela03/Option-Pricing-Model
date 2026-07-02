@@ -1,6 +1,7 @@
 """Tab 1 — Manual Parameters: pricing table, Greeks, heatmap."""
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from pricing.black_scholes import BlackScholes
@@ -176,6 +177,46 @@ def render_tab1(params: dict):
         "Put":   [f"{put_greeks[g]:.6f}"  for g, _ in greek_rows],
     })
     st.dataframe(greeks_df, width='stretch', hide_index=True)
+
+    st.divider()
+
+    # ----------------------------------------------------------------
+    # Premium & P&L vs Spot
+    # ----------------------------------------------------------------
+    st.subheader("Premium & P&L vs Spot (BS only)")
+    st.caption("K, T, r, σ held fixed at sidebar values. P&L assumes the position "
+              "was opened today at the sidebar spot, for the premium shown above.")
+
+    s_grid = np.linspace(max(S * 0.5, 0.01), S * 1.5, 200)
+    call_premium = np.array([_BS.price(s, K, T, r, sigma, "call") for s in s_grid])
+    put_premium  = np.array([_BS.price(s, K, T, r, sigma, "put")  for s in s_grid])
+    call_pnl = call_premium - bs_call
+    put_pnl  = put_premium  - bs_put
+
+    col_prem, col_pnl = st.columns(2)
+    with col_prem:
+        fig_prem = go.Figure()
+        fig_prem.add_trace(go.Scatter(x=s_grid, y=call_premium, mode="lines",
+                                      line=dict(color="#1f77b4", width=2), name="Call"))
+        fig_prem.add_trace(go.Scatter(x=s_grid, y=put_premium, mode="lines",
+                                      line=dict(color="#d62728", width=2), name="Put"))
+        fig_prem.add_vline(x=S, line_dash="dash", line_color="gray", annotation_text=f"S={S:.0f}")
+        fig_prem.update_layout(title="Premium vs Spot", xaxis_title="Spot",
+                               yaxis_title="Premium", height=380,
+                               legend=dict(orientation="h", y=-0.22))
+        st.plotly_chart(fig_prem, width='stretch')
+    with col_pnl:
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(x=s_grid, y=call_pnl, mode="lines",
+                                     line=dict(color="#1f77b4", width=2), name="Call"))
+        fig_pnl.add_trace(go.Scatter(x=s_grid, y=put_pnl, mode="lines",
+                                     line=dict(color="#d62728", width=2), name="Put"))
+        fig_pnl.add_hline(y=0, line_dash="dot", line_color="gray")
+        fig_pnl.add_vline(x=S, line_dash="dash", line_color="gray", annotation_text=f"S={S:.0f}")
+        fig_pnl.update_layout(title="P&L vs Spot (long position)", xaxis_title="Spot",
+                              yaxis_title="P&L", height=380,
+                              legend=dict(orientation="h", y=-0.22))
+        st.plotly_chart(fig_pnl, width='stretch')
 
     st.divider()
 

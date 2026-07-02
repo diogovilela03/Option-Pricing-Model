@@ -62,6 +62,24 @@ def test_airbag_nonnegative():
     assert d["price"] > 0.0
 
 
+def test_airbag_long_put_floor_is_meaningfully_priced():
+    """Regression guard: the dashboard used to call AirbagCertificate with a
+    missing K_floor argument, shifting every later positional param by one
+    slot and leaving the floor put priced at ~1e-125 (effectively 0)."""
+    d = AirbagCertificate().price(S, K_cap=110.0, K_floor=90.0, T=T, r=r, sigma=sigma,
+                                   participation=1.0, notional=notional)
+    assert d["long_put"] > 5.0   # sane ATM-ish put value, not near-zero garbage
+    assert d["floor_level"] == 90.0
+
+
+def test_twin_win_put_varies_meaningfully_with_strike():
+    """Regression guard: the down-and-out put leg used to be nearly flat
+    across strikes due to a bug in the underlying barrier formula."""
+    low_k = TwinWinCertificate().price(S, 80.0, T, r, sigma, H, notional)
+    high_k = TwinWinCertificate().price(S, 120.0, T, r, sigma, H, notional)
+    assert high_k["twin_put"] > low_k["twin_put"] * 5
+
+
 def test_twin_win_above_long_stock():
     """Twin-win adds value via the knock-out put → costs more than plain long stock."""
     tw = TwinWinCertificate().price(S, K, T, r, sigma, H, notional)
