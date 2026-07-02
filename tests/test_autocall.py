@@ -1,7 +1,7 @@
 """Tests for autocallable structured products."""
 import pytest
 
-from pricing.autocall import AutocallIncremental, Phoenix, PhoenixMemory
+from pricing.autocall import AutocallIncremental, Phoenix, PhoenixMemory, default_observation_dates
 
 S0, T, r, sigma = 100.0, 2.0, 0.05, 0.20
 obs = [0.5, 1.0, 1.5, 2.0]
@@ -59,3 +59,44 @@ def test_phoenix_result_has_expected_keys():
                         notional=notional, paths=5_000, seed=42)
     for key in ("price", "yield", "autocall_probability", "notional"):
         assert key in d
+
+
+def test_result_has_new_analytics_keys():
+    d = AutocallIncremental().price(S0, T, r, sigma, observation_dates=obs,
+                                    notional=notional, paths=5_000, seed=42)
+    for key in ("capital_loss_probability", "expected_exit_time",
+               "equivalent_zcb", "forward_at_maturity", "obs_table"):
+        assert key in d
+    assert len(d["obs_table"]) == len(obs)
+    for row in d["obs_table"]:
+        assert 0.0 <= row["maturity_probability"] <= 1.0
+        assert 0.0 <= row["coupon_probability"] <= 1.0
+
+
+def test_obs_table_maturity_probabilities_sum_to_one():
+    """Every path exits on exactly one observation date (called or matures)."""
+    d = AutocallIncremental().price(S0, T, r, sigma, observation_dates=obs,
+                                    notional=notional, paths=20_000, seed=42)
+    total = sum(row["maturity_probability"] for row in d["obs_table"])
+    assert abs(total - 1.0) < 1e-9
+
+
+def test_american_dip_more_conservative_than_european():
+    """American-style protection (checked at every observation) can only be
+    breached earlier/more often than European (checked at maturity only),
+    so it should never be worth more and should show >= capital-loss risk."""
+    d_eur = AutocallIncremental().price(S0, T, r, sigma, observation_dates=obs,
+                                        protection_barrier=0.60, dip_style="european",
+                                        notional=notional, paths=30_000, seed=11)
+    d_amer = AutocallIncremental().price(S0, T, r, sigma, observation_dates=obs,
+                                         protection_barrier=0.60, dip_style="american",
+                                         notional=notional, paths=30_000, seed=11)
+    assert d_amer["capital_loss_probability"] >= d_eur["capital_loss_probability"]
+    assert d_amer["price"] <= d_eur["price"] + 1.0  # small MC tolerance
+
+
+def test_default_observation_dates_frequency():
+    assert default_observation_dates(2.0, "annual") == [1.0, 2.0]
+    assert default_observation_dates(2.0, "semi-annual") == [0.5, 1.0, 1.5, 2.0]
+    assert len(default_observation_dates(2.0, "quarterly")) == 8
+    assert len(default_observation_dates(2.0, "monthly")) == 24

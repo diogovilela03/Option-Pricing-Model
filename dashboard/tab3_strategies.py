@@ -1,5 +1,6 @@
 """Tab 3 — Tier A: Option Strategies using opstrat for P&L diagrams."""
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
 
 from pricing.black_scholes import BlackScholes
@@ -157,7 +158,6 @@ def render_strategies(params: dict):
     except Exception as e:
         st.warning(f"opstrat chart unavailable: {e}")
         # Fallback: manual payoff chart
-        import plotly.graph_objects as go
         s_vals = np.linspace(S * 0.6, S * 1.4, 300)
         pnl = np.zeros(len(s_vals))
         for leg in legs:
@@ -175,3 +175,25 @@ def render_strategies(params: dict):
         gofig.add_vline(x=S, line_dash="dot", line_color="gray")
         gofig.update_layout(xaxis_title="Spot at Expiry", yaxis_title="P&L", height=380)
         st.plotly_chart(gofig, use_container_width=True)
+
+    st.divider()
+    st.markdown("**Greek vs Spot**")
+    greek_choice = st.selectbox(
+        "Greek", ["delta", "gamma", "vega", "theta", "rho"], key="strategy_greek")
+
+    s_vals = np.linspace(S * 0.6, S * 1.4, 120)
+    greek_vals = np.zeros(len(s_vals))
+    for leg in legs:
+        ot_leg = "call" if leg["op_type"] == "c" else "put"
+        sign = 1 if leg["tr_type"] == "b" else -1
+        for i, s in enumerate(s_vals):
+            greek_vals[i] += sign * _BS.greeks(s, leg["strike"], T, r, sigma, ot_leg)[greek_choice]
+
+    gfig = go.Figure()
+    gfig.add_trace(go.Scatter(x=s_vals, y=greek_vals, mode="lines",
+                              line=dict(color="#9467bd", width=2.5)))
+    gfig.add_hline(y=0, line_dash="dash", line_color="gray")
+    gfig.add_vline(x=S, line_dash="dot", line_color="gray", annotation_text=f"S={S:.0f}")
+    gfig.update_layout(xaxis_title="Spot (today)", yaxis_title=greek_choice.capitalize(), height=380)
+    st.plotly_chart(gfig, use_container_width=True)
+    st.caption("Analytic per-leg Black-Scholes Greeks, signed by side and summed across legs.")

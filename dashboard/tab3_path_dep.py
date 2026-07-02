@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from pricing.black_scholes import BlackScholes
@@ -16,11 +17,12 @@ from pricing.structured import (
     DiscountCertificate, BonusCertificate,
     AirbagCertificate, TwinWinCertificate,
 )
+from pricing.greeks_fd import fd_greeks_profile
 from dashboard.charts import (
     exotic_payoff_figure, barrier_delta_figure, barrier_mc_paths_figure,
     asian_running_avg_figure, asian_vol_comparison_figure,
     digital_call_spread_figure, digital_delta_vs_T_figure,
-    decomposition_waterfall_figure,
+    decomposition_waterfall_figure, premium_vs_spot_figure, greeks_grid_figure,
 )
 
 _BS = BlackScholes()
@@ -90,7 +92,7 @@ def render_path_dep_sidebar(sub_category: str) -> dict:
         extra["notional"] = st.sidebar.number_input("Notional", value=1000.0, step=100.0)
     if product == "Airbag Certificate":
         extra["participation"] = st.sidebar.number_input("Participation %", value=1.0, step=0.05, format="%.2f")
-        extra["floor"] = st.sidebar.number_input("Floor (% of S₀)", value=1.0, step=0.05, format="%.2f")
+        extra["K_floor"] = st.sidebar.number_input("Floor Level K_floor", value=90.0, step=1.0)
         extra["notional"] = st.sidebar.number_input("Notional", value=1000.0, step=100.0)
     if product == "Twin-Win Certificate":
         extra["barrier_tw"] = st.sidebar.number_input("Barrier H", value=70.0, step=1.0)
@@ -103,6 +105,30 @@ def render_path_dep_sidebar(sub_category: str) -> dict:
 
     return dict(product=product, S=S, K=K, T=T, r=r, sigma=sigma,
                 option_type=option_type, **extra)
+
+
+# ─────────────────────── shared Premium + Greeks panel ────────────────────────
+
+def _render_premium_and_greeks(price_fn, S: float, K: float, T: float, r: float,
+                               sigma: float, ot: str, label: str, n_grid: int = 40,
+                               show_vanilla: bool = True):
+    """Premium-vs-Spot + Greeks-vs-Spot (delta/gamma/vega/theta/rho), all via
+    finite differences on price_fn(S, K, T, r, sigma) -> float.
+
+    show_vanilla=False skips the BS reference line — structured products are
+    priced on notional (~$1000s), not a comparable per-share option premium.
+    """
+    s_grid = np.linspace(S * 0.6, S * 1.4, n_grid)
+    premium = np.array([price_fn(s, K, T, r, sigma) for s in s_grid])
+    vanilla = np.array([_BS.price(s, K, T, r, sigma, ot) for s in s_grid]) if show_vanilla else None
+
+    st.markdown("**Premium vs Spot**")
+    st.plotly_chart(premium_vs_spot_figure(s_grid, premium, vanilla, label, S),
+                    use_container_width=True)
+
+    st.markdown("**Greeks vs Spot** (finite-difference)")
+    greeks = fd_greeks_profile(price_fn, s_grid, K, T, r, sigma)
+    st.plotly_chart(greeks_grid_figure(s_grid, greeks, S), use_container_width=True)
 
 
 # ─────────────────────── individual product renderers ────────────────────────
@@ -151,6 +177,11 @@ def _render_digital(params: dict, digital_type: str):
     st.plotly_chart(digital_delta_vs_T_figure(T_grid, np.clip(deltas, -5, 5), T),
                     use_container_width=True)
 
+    st.divider()
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: _dig.price(s, k, t, r_, sig, ot, digital_type),
+        S, K, T, r, sigma, ot, f"Digital ({digital_type})")
+
 
 def _render_asian(params: dict, averaging: str):
     S, K, T, r, sigma = params["S"], params["K"], params["T"], params["r"], params["sigma"]
@@ -180,6 +211,14 @@ def _render_asian(params: dict, averaging: str):
         st.plotly_chart(asian_vol_comparison_figure(sig_grid, v_prices, g_prices, a_prices, sigma),
                         use_container_width=True)
 
+    st.divider()
+    st.caption("Premium/Greeks below use the fast geometric-CF price as a proxy "
+              "for both averaging conventions — arithmetic MC is too noisy for "
+              "stable finite-difference Greeks at interactive path counts.")
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: _geo.price(s, k, t, r_, sig, ot),
+        S, K, T, r, sigma, ot, f"Asian ({averaging})")
+
 
 def _render_barrier(params: dict):
     S, K, T, r, sigma = params["S"], params["K"], params["T"], params["r"], params["sigma"]
@@ -199,19 +238,38 @@ def _render_barrier(params: dict):
     c2.metric(f"MC ({paths:,})", f"{mc:.4f}")
     c3.metric("Vanilla (ref)", f"{vanilla:.4f}")
 
+    st.caption(
+        "Payoff assumes the terminal-spot vs barrier convention: e.g. an "
+        "up-and-out option is treated as knocked out whenever S_T is past "
+        "H. This is a simplification for a static diagram — a real barrier "
+        "option's knock status depends on the full path, not S_T alone."
+    )
     col1, col2 = st.columns(2)
     with col1:
         s_grid = np.linspace(S * 0.5, S * 1.5, 200)
-        exotic_p = np.array([_bar.price(s, K, T, r, sigma, ot, H, bt) for s in s_grid])
-        vanilla_p = np.array([_BS.price(s, K, T, r, sigma, ot) for s in s_grid])
+        vanilla_payoff = np.maximum((1 if ot == "call" else -1) * (s_grid - K), 0.0)
+        if bt == "down-and-out":
+            alive = s_grid > H
+        elif bt == "down-and-in":
+            alive = s_grid <= H
+        elif bt == "up-and-out":
+            alive = s_grid < H
+        else:  # up-and-in
+            alive = s_grid >= H
+        exotic_payoff = np.where(alive, vanilla_payoff, 0.0)
         st.plotly_chart(
-            exotic_payoff_figure(s_grid, exotic_p, vanilla_p, f"{bt} {ot}", S),
+            exotic_payoff_figure(s_grid, exotic_payoff, vanilla_payoff, f"{bt} {ot}", S),
             use_container_width=True)
     with col2:
         exotic_d = barrier_delta_profile(s_grid, K, T, r, sigma, H, bt, ot)
         vanilla_d = np.array([_BS.greeks(s, K, T, r, sigma, ot)["delta"] for s in s_grid])
         st.plotly_chart(barrier_delta_figure(s_grid, exotic_d, vanilla_d, H, bt, S),
                         use_container_width=True)
+
+    st.divider()
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: _bar.price(s, k, t, r_, sig, ot, H, bt),
+        S, K, T, r, sigma, ot, f"{bt} {ot}")
 
     tg, mc_paths, knocked = get_mc_paths_for_display(S, T, r, sigma, H, bt, n_display=60,
                                                       steps=steps, seed=seed)
@@ -239,12 +297,22 @@ def _render_double_barrier(params: dict):
     c3.metric(f"MC DKO", f"{mc:.4f}")
     c4.metric("Vanilla", f"{vanilla:.4f}")
 
+    st.caption(
+        "Payoff assumes the terminal-spot vs corridor convention: knocked "
+        "out whenever S_T falls outside [H_lower, H_upper]. A real double-"
+        "barrier option's knock status depends on the full path, not S_T alone."
+    )
     s_grid = np.linspace(HL * 0.8, HU * 1.2, 300)
-    dko_p = np.array([_dbl.price(s, K, T, r, sigma, ot, HL, HU, "double-knock-out")
-                      if HL < s < HU else 0.0 for s in s_grid])
-    vanilla_p = np.array([_BS.price(s, K, T, r, sigma, ot) for s in s_grid])
-    st.plotly_chart(exotic_payoff_figure(s_grid, dko_p, vanilla_p, "Double Knock-Out", S),
+    inside = (s_grid > HL) & (s_grid < HU)
+    vanilla_payoff = np.maximum((1 if ot == "call" else -1) * (s_grid - K), 0.0)
+    dko_payoff = np.where(inside, vanilla_payoff, 0.0)
+    st.plotly_chart(exotic_payoff_figure(s_grid, dko_payoff, vanilla_payoff, "Double Knock-Out", S),
                     use_container_width=True)
+
+    st.divider()
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: _dbl.price(s, k, t, r_, sig, ot, HL, HU, "double-knock-out"),
+        S, K, T, r, sigma, ot, "Double Knock-Out")
 
 
 def _render_quanto(params: dict):
@@ -277,7 +345,6 @@ def _render_quanto(params: dict):
                    sigma_S=sigma, sigma_FX=sig_FX, rho=rh, Q0=Q0)
         for rh in rho_grid
     ])
-    import plotly.graph_objects as go
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rho_grid, y=rho_prices, mode="lines",
                              line=dict(color="#1f77b4", width=2), name="Quanto price"))
@@ -287,6 +354,12 @@ def _render_quanto(params: dict):
     fig.update_layout(xaxis_title="ρ (stock–FX corr)", yaxis_title="Price",
                       height=360, margin=dict(t=30, b=20))
     st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: _qto.price(s, k, t, r_, sig, ot, r_d=r_,
+                                            r_f=r_f, sigma_S=sig, sigma_FX=sig_FX, rho=rho, Q0=Q0),
+        S, K, T, r, sigma, ot, "Quanto")
 
 
 def _render_structured(params: dict):
@@ -307,13 +380,35 @@ def _render_structured(params: dict):
             S, params.get("K_bonus", 110.0), T, r, sigma,
             params.get("barrier_bonus", 80.0), params.get("notional", 1000.0)),
         "Airbag Certificate": lambda: AirbagCertificate().price(
-            S, K, T, r, sigma,
-            params.get("participation", 1.0), params.get("floor", 1.0),
-            params.get("notional", 1000.0)),
+            S, K, params.get("K_floor", 90.0), T, r, sigma,
+            params.get("participation", 1.0), params.get("notional", 1000.0)),
         "Twin-Win Certificate": lambda: TwinWinCertificate().price(
             S, K, T, r, sigma,
             params.get("barrier_tw", 70.0), params.get("notional", 1000.0)),
     }
+
+    def pricer_map_at(s: float, t: float, r_: float, sig: float) -> dict:
+        """Same pricer_map, but with (S,T,r,sigma) swapped for arbitrary
+        values — used by the Premium/Greeks finite-difference sweep."""
+        if product == "Reverse Convertible":
+            return ReverseConvertible().price(
+                s, K, t, r_, sig, params.get("coupon_rate", 0.10), params.get("notional", 1000.0))
+        if product == "Barrier Reverse Convertible":
+            return BarrierReverseConvertible().price(
+                s, K, t, r_, sig, params.get("coupon_rate", 0.10),
+                params.get("barrier_brc", 75.0), params.get("notional", 1000.0))
+        if product == "Discount Certificate":
+            return DiscountCertificate().price(s, K, t, r_, sig, params.get("notional", 1000.0))
+        if product == "Bonus Certificate":
+            return BonusCertificate().price(
+                s, params.get("K_bonus", 110.0), t, r_, sig,
+                params.get("barrier_bonus", 80.0), params.get("notional", 1000.0))
+        if product == "Airbag Certificate":
+            return AirbagCertificate().price(
+                s, K, params.get("K_floor", 90.0), t, r_, sig,
+                params.get("participation", 1.0), params.get("notional", 1000.0))
+        return TwinWinCertificate().price(
+            s, K, t, r_, sig, params.get("barrier_tw", 70.0), params.get("notional", 1000.0))
 
     decompose_map = {
         "Reverse Convertible": lambda: ReverseConvertible().decompose(
@@ -327,8 +422,8 @@ def _render_structured(params: dict):
             S, params.get("K_bonus", 110.0), T, r, sigma,
             params.get("barrier_bonus", 80.0), params.get("notional", 1000.0)),
         "Airbag Certificate": lambda: AirbagCertificate().decompose(
-            S, K, T, r, sigma, params.get("participation", 1.0),
-            params.get("floor", 1.0), params.get("notional", 1000.0)),
+            S, K, params.get("K_floor", 90.0), T, r, sigma,
+            params.get("participation", 1.0), params.get("notional", 1000.0)),
         "Twin-Win Certificate": lambda: TwinWinCertificate().decompose(
             S, K, T, r, sigma, params.get("barrier_tw", 70.0), params.get("notional", 1000.0)),
     }
@@ -351,6 +446,56 @@ def _render_structured(params: dict):
     st.dataframe(df.rename(columns={"component": "Component", "value": "Value ($)", "pct": "% Notional"}),
                  use_container_width=True)
     st.plotly_chart(decomposition_waterfall_figure(components), use_container_width=True)
+
+    st.divider()
+    st.markdown("**Payoff vs Spot at Maturity**")
+    st.caption(
+        "Barrier-dependent products (Barrier RC, Bonus, Twin-Win) use the "
+        "terminal-spot vs barrier convention, same simplification as the "
+        "Path-Dependent barrier products."
+    )
+    s_grid = np.linspace(S * 0.5, S * 1.5, 200)
+    K_bonus = params.get("K_bonus", 110.0)
+    barrier_bonus = params.get("barrier_bonus", 80.0)
+    barrier_brc = params.get("barrier_brc", 75.0)
+    barrier_tw = params.get("barrier_tw", 70.0)
+    coupon_rate = params.get("coupon_rate", 0.10)
+    K_floor = params.get("K_floor", 90.0)
+    participation = params.get("participation", 1.0)
+
+    def _payoff(s_t):
+        n = notional / S
+        if product == "Reverse Convertible":
+            return np.where(s_t >= K, notional * (1 + coupon_rate), s_t / K * notional)
+        if product == "Barrier Reverse Convertible":
+            touched = s_t <= barrier_brc
+            below = touched & (s_t < K)
+            return np.where(below, s_t / K * notional, notional * (1 + coupon_rate))
+        if product == "Discount Certificate":
+            return n * np.minimum(s_t, K)
+        if product == "Bonus Certificate":
+            touched = s_t <= barrier_bonus
+            return np.where(touched, n * s_t, n * np.maximum(s_t, K_bonus))
+        if product == "Airbag Certificate":
+            return n * (s_t + participation * np.maximum(K_floor - s_t, 0.0)
+                        - np.maximum(s_t - K, 0.0))
+        # Twin-Win Certificate
+        touched = s_t <= barrier_tw
+        return np.where(touched, n * s_t, n * (s_t + np.abs(s_t - K)))
+
+    payoff = _payoff(s_grid)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=s_grid, y=payoff, mode="lines",
+                             line=dict(color="#2ca02c", width=2.5), name=product))
+    fig.add_hline(y=notional, line_dash="dot", line_color="gray", annotation_text="Notional")
+    fig.add_vline(x=S, line_dash="dash", line_color="gray", annotation_text=f"S={S:.0f}")
+    fig.update_layout(xaxis_title="Spot at Maturity", yaxis_title="Payoff ($)",
+                      height=380, margin=dict(t=30, b=20))
+    st.plotly_chart(fig, use_container_width=True)
+
+    _render_premium_and_greeks(
+        lambda s, k, t, r_, sig: pricer_map_at(s, t, r_, sig)["price"],
+        S, K, T, r, sigma, "call", product, show_vanilla=False)
 
 
 def render_path_dep(params: dict):
