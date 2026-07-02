@@ -1,5 +1,6 @@
 """Tab 3 — Tier A: Option Strategies using opstrat for P&L diagrams."""
 import numpy as np
+import plotly.graph_objects as go
 import streamlit as st
 
 from pricing.black_scholes import BlackScholes
@@ -157,7 +158,6 @@ def render_strategies(params: dict):
     except Exception as e:
         st.warning(f"opstrat chart unavailable: {e}")
         # Fallback: manual payoff chart
-        import plotly.graph_objects as go
         s_vals = np.linspace(S * 0.6, S * 1.4, 300)
         pnl = np.zeros(len(s_vals))
         for leg in legs:
@@ -189,7 +189,6 @@ def render_strategies(params: dict):
         for i, s in enumerate(s_vals):
             greek_vals[i] += sign * _BS.greeks(s, leg["strike"], T, r, sigma, ot_leg)[greek_choice]
 
-    import plotly.graph_objects as go
     gfig = go.Figure()
     gfig.add_trace(go.Scatter(x=s_vals, y=greek_vals, mode="lines",
                               line=dict(color="#9467bd", width=2.5)))

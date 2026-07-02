@@ -82,7 +82,7 @@ def render_multi_sidebar() -> dict:
             help="Worst-of/Rainbow payoffs are on relative performance "
                  "(terminal/initial), so the strike is a percentage, not "
                  "an absolute price.")
-        K = K_pct  # kept for display/summary purposes
+        K = K_pct
         K_relative = K_pct / 100.0
     T = st.sidebar.number_input("Maturity T (years)", value=1.0, step=0.25)
     r = st.sidebar.number_input("Risk-free rate r", value=0.05, step=0.005, format="%.3f")
