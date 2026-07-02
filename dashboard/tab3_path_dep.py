@@ -3,6 +3,7 @@ import math
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from pricing.black_scholes import BlackScholes
@@ -344,7 +345,6 @@ def _render_quanto(params: dict):
                    sigma_S=sigma, sigma_FX=sig_FX, rho=rh, Q0=Q0)
         for rh in rho_grid
     ])
-    import plotly.graph_objects as go
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=rho_grid, y=rho_prices, mode="lines",
                              line=dict(color="#1f77b4", width=2), name="Quanto price"))
@@ -484,7 +484,6 @@ def _render_structured(params: dict):
         return np.where(touched, n * s_t, n * (s_t + np.abs(s_t - K)))
 
     payoff = _payoff(s_grid)
-    import plotly.graph_objects as go
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=s_grid, y=payoff, mode="lines",
                              line=dict(color="#2ca02c", width=2.5), name=product))
