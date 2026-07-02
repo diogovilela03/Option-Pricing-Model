@@ -55,6 +55,19 @@ def test_correlation_sensitivity_returns_array():
     assert all(p >= 0 for p in prices if not np.isnan(p))
 
 
+def test_correlation_sensitivity_worst_of_varies_with_rho():
+    """Regression guard: the dashboard used to pass the absolute strike K
+    (e.g. 100.0) into correlation_sensitivity for worst-of/rainbow, which
+    expect a relative strike (~1.0). That made the price near-constant
+    across rho since the payoff comparison was on the wrong scale."""
+    rho_grid, prices = correlation_sensitivity(
+        spots, K_rel, T, r, vols, "put", product="worst-of",
+        rho_grid=np.linspace(-0.4, 0.8, 5), paths=20_000, seed=7,
+    )
+    valid = prices[~np.isnan(prices)]
+    assert valid.max() - valid.min() > 0.01 * valid.mean()
+
+
 def test_invalid_corr_shape_raises():
     bad_corr = np.eye(3)  # 3×3 for 2 assets
     with pytest.raises(ValueError):

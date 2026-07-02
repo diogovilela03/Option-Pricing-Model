@@ -587,3 +587,58 @@ def smile_figure(
         legend=dict(orientation="h", y=-0.22),
     )
     return fig
+
+
+def premium_vs_spot_figure(
+    S_grid: np.ndarray,
+    exotic_premium: np.ndarray,
+    vanilla_premium: np.ndarray | None,
+    exotic_label: str,
+    S_current: float,
+) -> go.Figure:
+    """Today's option value as spot varies, T/K/sigma/r held fixed.
+
+    Distinct from a terminal-payoff diagram: this is mark-to-market PV
+    sensitivity, not the payoff realized at expiry. Pass
+    vanilla_premium=None to omit the comparison line (e.g. for notional-
+    scale structured products, where a per-share BS price isn't comparable).
+    """
+    fig = go.Figure()
+    if vanilla_premium is not None:
+        fig.add_trace(go.Scatter(
+            x=S_grid, y=vanilla_premium, mode="lines",
+            line=dict(color="gray", width=1.5, dash="dot"), name="Vanilla",
+        ))
+    fig.add_trace(go.Scatter(
+        x=S_grid, y=exotic_premium, mode="lines",
+        line=dict(color="#2ca02c", width=2.5), name=exotic_label,
+    ))
+    fig.add_vline(x=S_current, line_dash="dash", line_color="gray", line_width=1,
+                  annotation_text=f"S={S_current:.0f}")
+    fig.update_layout(
+        xaxis_title="Spot (today)", yaxis_title="Premium",
+        height=380, margin=dict(t=30, b=20),
+        legend=dict(orientation="h", y=-0.22),
+    )
+    return fig
+
+
+def greeks_grid_figure(
+    S_grid: np.ndarray,
+    greeks: dict[str, list[float]],
+    S_current: float,
+) -> go.Figure:
+    """5-panel grid of delta/gamma/vega/theta/rho vs spot."""
+    names = ["delta", "gamma", "vega", "theta", "rho"]
+    fig = make_subplots(rows=1, cols=5, subplot_titles=[n.capitalize() for n in names],
+                        horizontal_spacing=0.05)
+    for i, name in enumerate(names):
+        fig.add_trace(
+            go.Scatter(x=S_grid, y=greeks[name], mode="lines",
+                      line=dict(color="#1f77b4", width=2), showlegend=False),
+            row=1, col=i + 1,
+        )
+        fig.add_vline(x=S_current, line_dash="dash", line_color="gray", line_width=1,
+                     row=1, col=i + 1)
+    fig.update_layout(height=300, margin=dict(t=40, b=20))
+    return fig
