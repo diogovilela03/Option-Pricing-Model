@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+.coverage
 # data/spy_chain.db is intentionally committed (portfolio snapshot, updated manually)
 *.sqlite
 .venv/
